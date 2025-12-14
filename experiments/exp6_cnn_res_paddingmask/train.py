@@ -101,7 +101,7 @@ def main():
     criterion = nn.CrossEntropyLoss(weight=class_w)
 
     # ====== saving ======
-    out_dir = "experiments/exp5_cnn_res/artifacts"
+    out_dir = "experiments/exp6_cnn_res_paddingmask/artifacts"
     os.makedirs(out_dir, exist_ok=True)
     best_path = os.path.join(out_dir, "model_best.pt")
     final_path = os.path.join(out_dir, "model.pt")
