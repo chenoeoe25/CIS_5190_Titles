@@ -5,6 +5,7 @@ from typing import Any, Iterable, List
 MAX_LEN = 96
 VOCAB_SIZE = 256
 
+
 class ResBlock1D(nn.Module):
     def __init__(self, c: int):
         super().__init__()
@@ -19,6 +20,7 @@ class ResBlock1D(nn.Module):
     def forward(self, x):
         return self.act(x + self.net(x))
 
+
 class Model(nn.Module):
     def __init__(self):
         super().__init__()
@@ -28,7 +30,10 @@ class Model(nn.Module):
         dim_ff = 512
         dropout = 0.1
 
-        self.tok_emb = nn.Embedding(VOCAB_SIZE, d_model, padding_idx=0)
+        # Token embedding (no padding_idx; padding token remains learnable)
+        self.tok_emb = nn.Embedding(VOCAB_SIZE, d_model)
+
+        # Absolute positional embedding
         self.pos_emb = nn.Embedding(MAX_LEN, d_model)
 
         enc_layer = nn.TransformerEncoderLayer(
@@ -55,6 +60,7 @@ class Model(nn.Module):
                 ResBlock1D(c),
             )
 
+        # Multiple CNN branches with different kernel sizes
         self.cnns = nn.ModuleList([
             make_branch(3),
             make_branch(5),
@@ -70,23 +76,43 @@ class Model(nn.Module):
         )
 
     def forward(self, ids: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            ids: Tensor of shape [B, L], byte-level token ids (0 = padding)
+        """
         B, L = ids.shape
+
+        # ----- Token + position embedding -----
         pos = torch.arange(L, device=ids.device).unsqueeze(0).expand(B, L)
         x = self.tok_emb(ids) + self.pos_emb(pos)
-        
-        # padding mask
-        pad_mask = (ids == 0)
-        h = self.encoder(x, src_key_padding_mask=pad_mask)
 
-        h_t = h.transpose(1, 2)
+        # Padding mask: True indicates padding positions
+        pad_mask = (ids == 0)  # [B, L]
+
+        # Mask enhancement 1:
+        # Zero out all padded positions after adding positional embeddings
+        # This prevents positional signals from leaking into padding tokens
+        x = x.masked_fill(pad_mask.unsqueeze(-1), 0.0)
+
+        # ----- Transformer encoder -----
+        # Padding tokens are excluded from attention
+        h = self.encoder(x, src_key_padding_mask=pad_mask)  # [B, L, D]
+
+        # ----- CNN + masked global max pooling -----
+        h_t = h.transpose(1, 2)  # [B, D, L]
         feats = []
+
         for branch in self.cnns:
-            z = branch(h_t)          # [B, C, L]
-            z = z.masked_fill(pad_mask.unsqueeze(1), float('-inf'))
-            z = torch.amax(z, dim=2) # [B, C]
+            z = branch(h_t)  # [B, C, L]
+
+            # Mask enhancement 2:
+            # Ensure padding positions are never selected by global max pooling
+            z = z.masked_fill(pad_mask.unsqueeze(1), float("-inf"))
+            z = torch.amax(z, dim=2)  # [B, C]
+
             feats.append(z)
 
-        feat = torch.cat(feats, dim=1)
+        feat = torch.cat(feats, dim=1)  # [B, C * num_branches]
         feat = self.dropout(feat)
         return self.classifier(feat)
 
@@ -98,14 +124,16 @@ class Model(nn.Module):
                 b = s.encode("utf-8", errors="ignore")[:MAX_LEN]
                 arr = list(b) + [0] * (MAX_LEN - len(b))
                 return torch.tensor(arr, dtype=torch.long)
+
             ids = torch.stack([to_ids(s) for s in items], dim=0)
         else:
             ids = torch.stack([it["ids"] for it in items], dim=0)
 
         self.eval()
         with torch.no_grad():
-            logits = self.forward(ids)
+            logits = self.forward(ids.to(next(self.parameters()).device))
             return logits.argmax(dim=1).cpu().tolist()
+
 
 def get_model() -> Model:
     return Model()
