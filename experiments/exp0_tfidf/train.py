@@ -35,8 +35,7 @@ def main():
     set_seed(0)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # 训练数据（你的爬虫）
-    X_all, y_all = prepare_data("data/train_urls_url_only_60k.csv")
+    X_all, y_all = prepare_data("data/train_urls_url_only.csv")
     n = len(y_all)
 
     tr_idx, va_idx, te_idx = split_indices(n, val_ratio=0.1, test_ratio=0.1, seed=0)

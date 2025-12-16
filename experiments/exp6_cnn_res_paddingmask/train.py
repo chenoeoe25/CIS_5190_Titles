@@ -1,6 +1,7 @@
-# experiments/exp_byte_tf/train.py
+# experiments/exp6_cnn/train.py
 import os
 import random
+import csv
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
@@ -29,7 +30,7 @@ class ListDataset(Dataset):
 
 def collate_fn(batch):
     Xs, ys = zip(*batch)
-    ids = torch.stack([x["ids"] for x in Xs], dim=0)  # [B, L]
+    ids = torch.stack([x["ids"] for x in Xs], dim=0)
     y = torch.tensor(ys, dtype=torch.long)
     return ids, y
 
@@ -50,29 +51,36 @@ def eval_acc(model, loader, device):
     model.eval()
     correct, total = 0, 0
     for ids, yy in loader:
-        ids = ids.to(device)
-        yy = yy.to(device)
-        logits = model.forward(ids)
-        pred = logits.argmax(dim=1)
+        ids, yy = ids.to(device), yy.to(device)
+        pred = model(ids).argmax(dim=1)
         correct += (pred == yy).sum().item()
         total += yy.numel()
     return correct / max(total, 1)
+
+
+@torch.no_grad()
+def eval_loss(model, loader, criterion, device):
+    model.eval()
+    total_loss, total = 0.0, 0
+    for ids, yy in loader:
+        ids, yy = ids.to(device), yy.to(device)
+        loss = criterion(model(ids), yy)
+        total_loss += loss.item() * yy.size(0)
+        total += yy.size(0)
+    return total_loss / max(total, 1)
 
 
 def main():
     set_seed(0)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # ====== load train data ======
-    X, y = prepare_data("data/train_urls_url_only_60k.csv")
-    n = len(y)
-
-    tr_idx, va_idx, te_idx = split_indices(n, val_ratio=0.1, test_ratio=0.1, seed=0)
+    # ====== data ======
+    # X, y = prepare_data("data/train_urls_url_only_60k.csv")
+    X, y = prepare_data("data/train_urls_url_only.csv")
+    tr_idx, va_idx, te_idx = split_indices(len(y))
 
     def subset(idxs):
-        Xs = [X[i] for i in idxs]
-        ys = y[idxs].tolist()  # y is tensor
-        return Xs, ys
+        return [X[i] for i in idxs], y[idxs].tolist()
 
     Xtr, ytr = subset(tr_idx)
     Xva, yva = subset(va_idx)
@@ -82,101 +90,77 @@ def main():
     va_loader = DataLoader(ListDataset(Xva, yva), batch_size=256, shuffle=False, collate_fn=collate_fn)
     te_loader = DataLoader(ListDataset(Xte, yte), batch_size=256, shuffle=False, collate_fn=collate_fn)
 
-    # ====== model / optim ======
+    # ====== model ======
     model = Model().to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-2)
 
-    # ✅ 更合理的默认：更快收敛
-    LR = 2e-4
-    WD = 1e-2
-    opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WD)
-
-    # ====== handle class imbalance (simple) ======
-    # fox=1, nbc=0
-    ytr_tensor = torch.tensor(ytr, dtype=torch.long)
-    n0 = (ytr_tensor == 0).sum().item()
-    n1 = (ytr_tensor == 1).sum().item()
-    w0 = (n0 + n1) / max(2 * n0, 1)
-    w1 = (n0 + n1) / max(2 * n1, 1)
-    class_w = torch.tensor([w0, w1], dtype=torch.float, device=device)
-    criterion = nn.CrossEntropyLoss(weight=class_w)
+    # class weight
+    ytr_t = torch.tensor(ytr)
+    n0, n1 = (ytr_t == 0).sum(), (ytr_t == 1).sum()
+    w = torch.tensor([(n0+n1)/(2*n0), (n0+n1)/(2*n1)], device=device)
+    criterion = nn.CrossEntropyLoss(weight=w)
 
     # ====== saving ======
     out_dir = "experiments/exp6_cnn_res_paddingmask/artifacts"
     os.makedirs(out_dir, exist_ok=True)
     best_path = os.path.join(out_dir, "model_best.pt")
-    final_path = os.path.join(out_dir, "model.pt")
+    metrics_path = os.path.join(out_dir, "metrics.csv")
 
-    # ====== training control ======
-    EPOCHS = 200
-    SAVE_EVERY = 10
-    PATIENCE = 30  # ✅ early stop
-    GRAD_CLIP = 1.0
+    # ====== training ======
+    EPOCHS = 50
+    PATIENCE = 30
+    best_val, no_improve = -1, 0
 
-    best_val = -1.0
-    no_improve = 0
+    with open(metrics_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["epoch", "train_loss", "val_loss", "train_acc", "val_acc"])
 
-    for ep in range(1, EPOCHS + 1):
-        model.train()
-        total_loss = 0.0
+        for ep in range(1, EPOCHS + 1):
+            model.train()
+            total_loss, correct, total = 0.0, 0, 0
 
-        for ids, yy in tr_loader:
-            ids = ids.to(device)
-            yy = yy.to(device)
+            for ids, yy in tr_loader:
+                ids, yy = ids.to(device), yy.to(device)
+                opt.zero_grad(set_to_none=True)
+                logits = model(ids)
+                loss = criterion(logits, yy)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                opt.step()
 
-            opt.zero_grad(set_to_none=True)
-            logits = model.forward(ids)
-            loss = criterion(logits, yy)
-            loss.backward()
+                total_loss += loss.item() * yy.size(0)
+                correct += (logits.argmax(1) == yy).sum().item()
+                total += yy.size(0)
 
-            # ✅ stabilize
-            torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
+            train_loss = total_loss / total
+            train_acc = correct / total
+            val_loss = eval_loss(model, va_loader, criterion, device)
+            val_acc = eval_acc(model, va_loader, device)
 
-            opt.step()
-            total_loss += loss.item() * yy.size(0)
+            writer.writerow([ep, train_loss, val_loss, train_acc, val_acc])
+            f.flush()
 
-        val_acc = eval_acc(model, va_loader, device)
+            if val_acc > best_val:
+                best_val = val_acc
+                no_improve = 0
+                torch.save(model.state_dict(), best_path)
+            else:
+                no_improve += 1
 
-        improved = val_acc > best_val + 1e-6
-        if improved:
-            best_val = val_acc
-            no_improve = 0
-            torch.save(model.state_dict(), best_path)
-        else:
-            no_improve += 1
+            print(f"Epoch {ep:03d} | "
+                  f"train_loss={train_loss:.4f} "
+                  f"val_loss={val_loss:.4f} "
+                  f"train_acc={train_acc:.4f} "
+                  f"val_acc={val_acc:.4f}")
 
-        if ep % SAVE_EVERY == 0 or ep == 1:
-            avg_loss = total_loss / max(len(tr_loader.dataset), 1)
-            ckpt_path = os.path.join(out_dir, f"ckpt_epoch{ep:03d}.pt")
-            torch.save(model.state_dict(), ckpt_path)
-            print(f"Epoch {ep:03d}: loss={avg_loss:.4f} val_acc={val_acc:.4f} best={best_val:.4f} no_improve={no_improve}")
+            if no_improve >= PATIENCE:
+                print(f"Early stop at epoch {ep}, best val acc = {best_val:.4f}")
+                break
 
-        if no_improve >= PATIENCE:
-            print(f"Early stop: no val improvement for {PATIENCE} epochs. Best={best_val:.4f}")
-            break
-
-    # ====== load best -> final save ======
+    # ====== test ======
     model.load_state_dict(torch.load(best_path, map_location="cpu"))
-    torch.save(model.state_dict(), final_path)
-
-    # ====== evaluate ======
     test_acc = eval_acc(model, te_loader, device)
-
-    # teacher
-    X_teacher, y_teacher = prepare_data("data/url_only_data.csv")
-    teacher_loader = DataLoader(
-        ListDataset(X_teacher, y_teacher.tolist()),
-        batch_size=256,
-        shuffle=False,
-        collate_fn=collate_fn,
-    )
-    teacher_acc = eval_acc(model, teacher_loader, device)
-
-    print("Saved:", final_path)
-    print("ACC summary:")
-    print(f"  best_val     = {best_val:.4f}")
-    print(f"  test_acc     = {test_acc:.4f}")
-    print(f"  teacher_acc  = {teacher_acc:.4f}")
-    print(f"  LR={LR} WD={WD} class_w={[float(w0), float(w1)]}")
+    print(f"Final test acc = {test_acc:.4f}")
 
 
 if __name__ == "__main__":

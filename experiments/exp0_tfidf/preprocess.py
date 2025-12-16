@@ -4,16 +4,23 @@ import torch
 from typing import Any, List, Tuple
 
 def clean_slug(url: str) -> str:
-    slug = str(url).rstrip("/").split("/")[-1].lower()
+    # rightmost
+    slug = url.rstrip("/").split("/")[-1].lower()
 
-    # remove rcna, cna endings
+    # endings
     slug = re.sub(r"(?:-)?rcna\d+$", "", slug)
     slug = re.sub(r"(?:-)?r?cna\d+$", "", slug)
+    slug = re.sub(r"-n\d+$", "", slug)
+    slug = re.sub(r"(?:-)?ncna\d+$", "", slug)
+    slug = re.sub(r"(?:-)?ncpn\d+$", "", slug)
+    slug = re.sub(r"(?:-)?\d{5,}$", "", slug)
 
-    # preserve
+    # meaningful words
     slug = re.sub(r"[^a-z0-9\-_]+", " ", slug)
     slug = slug.replace("_", "-")
     slug = re.sub(r"\s+", " ", slug).strip()
+
+    # spaces
     slug = slug.replace("-", " ")
     slug = re.sub(r"\s+", " ", slug).strip()
     return slug

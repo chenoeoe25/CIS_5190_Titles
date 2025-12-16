@@ -16,10 +16,27 @@ def _label_from_url(url: str) -> int:
     return -1
 
 def _clean_slug(url: str) -> str:
-    slug = url.rstrip("/").split("/")[-1]
-    slug = re.sub(r"-rcna\d+.*$", "", slug)
-    slug = re.sub(r"[^a-zA-Z\-]", " ", slug)
-    return slug.replace("-", " ").lower().strip()
+    # rightmost
+    slug = url.rstrip("/").split("/")[-1].lower()
+
+    # endings
+    slug = re.sub(r"(?:-)?rcna\d+$", "", slug)
+    slug = re.sub(r"(?:-)?r?cna\d+$", "", slug)
+    slug = re.sub(r"-n\d+$", "", slug)
+    slug = re.sub(r"(?:-)?ncna\d+$", "", slug)
+    slug = re.sub(r"(?:-)?ncpn\d+$", "", slug)
+    slug = re.sub(r"(?:-)?\d{5,}$", "", slug)
+    slug = re.sub(r"(?:-)?ncsl\d+$", "", slug)
+
+    # meaningful words
+    slug = re.sub(r"[^a-z0-9\-_]+", " ", slug)
+    slug = slug.replace("_", "-")
+    slug = re.sub(r"\s+", " ", slug).strip()
+
+    # spaces
+    slug = slug.replace("-", " ")
+    slug = re.sub(r"\s+", " ", slug).strip()
+    return slug
 
 def _build_vocab(texts: List[str], max_vocab: int):
     c = Counter()
