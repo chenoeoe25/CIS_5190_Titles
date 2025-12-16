@@ -1,4 +1,3 @@
-````markdown
 # CIS 5190 Project: URL Classification
 
 This repository contains the code and experiments for the CIS 5190 course project on URL classification.
@@ -74,5 +73,3 @@ python eval/eval_project_b.py \
   --weights experiments/exp6_cnn_res_paddingmask/artifacts/model_best.pt \
   --batch-size 32
 ```
-
-````
