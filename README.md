@@ -8,6 +8,8 @@ Evaluations:
 when you are inside CIS_5190_Titles Project
 1. evaluate on train_urls_url_only.csv
    Run
+
+
 python eval/eval_project_b.py \
   --model experiments/exp6_cnn_res_paddingmask/model.py \
   --preprocess experiments/exp6_cnn_res_paddingmask/preprocess.py \
@@ -17,6 +19,8 @@ python eval/eval_project_b.py \
 
 3. evaluate on train_urls_url_only_60k.csv
   Run
+
+
 python eval/eval_project_b.py \
   --model experiments/exp6_cnn_res_paddingmask/model.py \
   --preprocess experiments/exp6_cnn_res_paddingmask/preprocess.py \
